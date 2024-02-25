@@ -1,10 +1,12 @@
-from bs4 import BeautifulSoup, Tag
-import requests
-import re
-from pathlib import Path
 import csv
 import json
 import logging
+import re
+from pathlib import Path
+from sys import exit
+
+import requests
+from bs4 import BeautifulSoup, Tag
 
 URL = "https://calorizator.ru/product"
 HEADERS = {
@@ -17,6 +19,11 @@ HTML_DIR = Path(__file__).parent / "html"
 CSV_DIR = Path(__file__).parent / "csv"
 DIRTY_JSON_DIR = Path(__file__).parent / "dirty_json"
 JSON_DIR = Path(__file__).parent / "json"
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s - %(message)s",
+)
 
 
 def main():
@@ -53,16 +60,25 @@ def main():
 def clear_csv(dirty_json_paths: list[Path]) -> list[Path]:
     files: list[Path] = []
 
+    if not dirty_json_paths:
+        logging.error("Список файлов для очисти пуст!")
+        exit(1)
+
     for path in dirty_json_paths:
         with open(path, "r", encoding="utf-8") as file:
             data_json = json.load(file)
 
         cleared_heads = [clear_str(key) for key in data_json[0].keys()]
         cleared_data = [
-            [clear_str(value) for key, value in data.items()] for data in data_json
+            [clear_str(value) for _, value in data.items()] for data in data_json
         ]
 
         files.append(write_csv(cleared_heads, cleared_data, path.stem))
+    logging.info(
+        "Данные были очищены и помещены в каталог %s: %s",
+        str(CSV_DIR),
+        [file.name for file in files],
+    )
     return files
 
 
@@ -78,6 +94,10 @@ def clear_str(data_string: str) -> str:
 def clear_json(dirty_json_paths: list[Path]) -> list[Path]:
     files: list[Path] = []
 
+    if not dirty_json_paths:
+        logging.error("Список файлов для очисти пуст!")
+        exit(1)
+
     for path in dirty_json_paths:
         with open(path, "r", encoding="utf-8") as file:
             data_json = json.load(file)
@@ -86,29 +106,41 @@ def clear_json(dirty_json_paths: list[Path]) -> list[Path]:
             {clear_str(key): clear_str(value) for key, value in data.items()}
             for data in data_json
         ]
-
         files.append(write_json(cleared_data, path.stem))
+    logging.info(
+        "Данные были очищены и помещены в каталог %s: %s",
+        str(JSON_DIR),
+        [file.name for file in files],
+    )
     return files
 
 
 def download_dirty_data(html_paths: list[Path]) -> list[Path]:
     files: list[Path] = []
 
+    if not html_paths:
+        logging.error("Список файлов для очисти пуст!")
+        exit(1)
+
     for path in html_paths:
         soup = read_html(path)
 
         table = soup.find("table")
-        table_header: list = take_header(table)
-        table_data: list[list] = [list(row) for row in zip(*take_data(table))]
+        table_header: list = get_header(table)
+        table_data: list[list] = [list(row) for row in zip(*get_column_data(table))]
 
         files.append(
             write_json(
-                [dict(zip(table_header, i)) for i in table_data],
+                [dict(zip(table_header, row)) for row in table_data],
                 path.stem,
                 DIRTY_JSON_DIR,
             )
         )
-
+    logging.info(
+        "Данные были загружены и помещены в каталог %s: %s",
+        {str(DIRTY_JSON_DIR)},
+        [file.name for file in files],
+    )
     return files
 
 
@@ -130,33 +162,37 @@ def write_csv(header: list, data: list[list], file_name: str) -> Path:
     return Path(file_path)
 
 
-def take_header(table: Tag) -> list:
+def get_header(table: Tag) -> list:
     return [t.text for t in table.find("thead").find_all("th")[1:]]
 
 
-def take_data(table: Tag) -> tuple[list, list, list, list]:
+def get_column_data(table: Tag) -> tuple[list, list, list, list]:
     products = table.find_all("td", class_="views-field views-field-title active")
     products_names: list[str] = [product.find("a").text for product in products]
 
     products_protein = [
-        i.text
-        for i in table.find_all(
+        item.text
+        for item in table.find_all(
             "td", class_="views-field views-field-field-protein-value"
         )
     ]
     products_carbohydrate = [
-        i.text
-        for i in table.find_all(
+        item.text
+        for item in table.find_all(
             "td", class_="views-field views-field-field-carbohydrate-value"
         )
     ]
     products_fat = [
-        i.text
-        for i in table.find_all("td", class_="views-field views-field-field-fat-value")
+        item.text
+        for item in table.find_all(
+            "td", class_="views-field views-field-field-fat-value"
+        )
     ]
     products_kcal = [
-        i.text
-        for i in table.find_all("td", class_="views-field views-field-field-kcal-value")
+        item.text
+        for item in table.find_all(
+            "td", class_="views-field views-field-field-kcal-value"
+        )
     ]
 
     return [
@@ -171,6 +207,10 @@ def take_data(table: Tag) -> tuple[list, list, list, list]:
 def download_category_pages(categories: list) -> list[Path]:
     files: list[Path] = []
 
+    if not categories:
+        logging.error("Список категорий пуст!")
+        exit(1)
+
     for category in categories[:3]:
         href: str = category.find("a").get("href")
         category_name: str = href.split("/")[1]
@@ -180,12 +220,25 @@ def download_category_pages(categories: list) -> list[Path]:
             url=f"{URL}/{category_name}/",
         )
         files.append(file_path)
+
+    logging.info(
+        "Страницы продуктов загружены и записаны в каталог %s: %s",
+        str(HTML_DIR),
+        [file.name for file in files],
+    )
     return files
 
 
 def download_page(file_dir: Path, file_name: str, url: str = URL) -> Path:
 
-    req = requests.get(url=url, headers=HEADERS, timeout=10)
+    for _ in range(3):
+        req = requests.get(url=url, headers=HEADERS, timeout=10)
+        if req is not None:
+            logging.info("Ответ получен! ресурс: %s", url)
+            break
+    else:
+        logging.error("requests не удалось получить данные по URL: %s", url)
+        exit(1)
 
     file_path = f"{file_dir}/{file_name}"
 
